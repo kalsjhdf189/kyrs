@@ -104,6 +104,7 @@ class IncomingInvoiceWidget(QWidget):
         self.table = QTableWidget()
         self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)  # Добавлено
         self.layout.addWidget(self.table)
 
         self.load_table_data()

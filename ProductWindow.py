@@ -1,13 +1,20 @@
 # ProductWindow.py
 from PySide6.QtWidgets import (
     QWidget, QTableWidget, QVBoxLayout, QPushButton, QHBoxLayout, 
-    QTableWidgetItem, QDialog, QLineEdit, QLabel, QComboBox, QMessageBox, QSizePolicy, QHeaderView
+    QTableWidgetItem, QDialog, QLineEdit, QLabel, QComboBox, QMessageBox, QSizePolicy, QHeaderView, QMessageBox
 )
 from PySide6.QtCore import Qt
 from datebase import Product, ProductType, ProductOnWarehouse, Connect
 from AddProduct import AddProductDialog
 from styles import TABLE_WIDGET_STYLE
 from sqlalchemy import func
+
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
+from reportlab.lib import colors
+
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 
 class ProductWidget(QWidget):
     def __init__(self, parent=None):
@@ -19,14 +26,16 @@ class ProductWidget(QWidget):
         self.layout = QVBoxLayout(self)
         self.btnLayout = QHBoxLayout()
         self.filterLayout = QHBoxLayout()
-
+        
         self.addBtn = QPushButton("+")
         self.addBtn.clicked.connect(self.add_product)
-        self.editBtn = QPushButton("Редактировать")
-        self.editBtn.clicked.connect(self.edit_product)
         self.deleteBtn = QPushButton("-")
         self.deleteBtn.clicked.connect(self.delete_product)
-
+        
+        # Добавление кнопки "Отчёт"
+        self.reportBtn = QPushButton("Отчёт")
+        self.reportBtn.clicked.connect(self.generate_stock_report)
+        
         self.searchLabel = QLabel("Поиск:")
         self.searchEdit = QLineEdit()
         self.searchEdit.textChanged.connect(self.search_products)
@@ -37,8 +46,9 @@ class ProductWidget(QWidget):
         self.typeCombo.currentIndexChanged.connect(self.filter_by_type)
 
         self.btnLayout.addWidget(self.addBtn)
-        self.btnLayout.addWidget(self.editBtn)
         self.btnLayout.addWidget(self.deleteBtn)
+        self.btnLayout.addWidget(self.reportBtn)  # Добавляем кнопку в layout
+        self.btnLayout.addStretch()  # Добавляем растяжку для выравнивания
         
         self.filterLayout.addWidget(self.searchLabel)
         self.filterLayout.addWidget(self.searchEdit)
@@ -51,6 +61,8 @@ class ProductWidget(QWidget):
         self.table = QTableWidget()
         self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.doubleClicked.connect(self.edit_product)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.layout.addWidget(self.table)
 
         self.load_table_data()
@@ -108,6 +120,41 @@ class ProductWidget(QWidget):
             total_stock = stock_dict.get(product.id, 0)
             self.table.setItem(row, 10, QTableWidgetItem(str(total_stock)))
 
+    def generate_stock_report(self):
+        stocks = self.session.query(ProductOnWarehouse).all()
+
+        if not stocks:
+            QMessageBox.warning(self, "Предупреждение", "Нет данных для формирования отчёта!")
+            return
+
+        data = [["Продукция", "Склад", "Количество"]]
+        for stock in stocks:
+            product_name = stock.продукция.Наименование if stock.продукция else "Не указан"
+            warehouse_name = stock.склад.Название if stock.склад else "Не указан"
+            quantity = stock.Количество
+            data.append([product_name, warehouse_name, quantity])
+
+        pdf_file = "stock_report.pdf"
+        doc = SimpleDocTemplate(pdf_file, pagesize=A4)
+        elements = []
+
+        table = Table(data)
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, -1), 'SegoeUIRegular'),
+            ('FONTSIZE', (0, 0), (-1, 0), 14),
+            ('FONTSIZE', (0, 1), (-1, -1), 12),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+        ]))
+
+        elements.append(table)
+        doc.build(elements)
+        QMessageBox.information(self, "Успех", f"Отчёт успешно сохранён как {pdf_file}!")
+    
     def search_products(self):
         search_query = self.searchEdit.text().strip()
         type_id = self.typeCombo.currentData()
@@ -122,6 +169,7 @@ class ProductWidget(QWidget):
         dialog = AddProductDialog(self.session, self)
         if dialog.exec() == QDialog.Accepted:
             self.load_table_data(search_query=self.searchEdit.text().strip(), type_id=self.typeCombo.currentData())
+            QMessageBox.information(self, "Успех", "Продукт успешно добавлен через диалог!")
 
     def edit_product(self):
         selected = self.table.currentRow()
@@ -132,6 +180,7 @@ class ProductWidget(QWidget):
                 dialog = AddProductDialog(self.session, self, product)
                 if dialog.exec() == QDialog.Accepted:
                     self.load_table_data(search_query=self.searchEdit.text().strip(), type_id=self.typeCombo.currentData())
+                    QMessageBox.information(self, "Успех", "Продукт успешно отредактирован!")
         else:
             QMessageBox.warning(self, "Предупреждение", "Выберите продукт для редактирования")
 
@@ -141,6 +190,12 @@ class ProductWidget(QWidget):
             product_id = int(self.table.item(selected, 0).text())
             product = self.session.query(Product).filter(Product.id == product_id).first()
             if product:
-                self.session.delete(product)
-                self.session.commit()
-                self.load_table_data(search_query=self.searchEdit.text().strip(), type_id=self.typeCombo.currentData())
+                reply = QMessageBox.question(self, "Подтверждение", "Вы уверены, что хотите удалить этот продукт?",
+                                            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                if reply == QMessageBox.Yes:
+                    self.session.delete(product)
+                    self.session.commit()
+                    self.load_table_data(search_query=self.searchEdit.text().strip(), type_id=self.typeCombo.currentData())
+                    QMessageBox.information(self, "Успех", "Продукт успешно удалён!")
+        else:
+            QMessageBox.warning(self, "Предупреждение", "Выберите продукт для удаления")
